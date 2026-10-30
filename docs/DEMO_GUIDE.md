@@ -53,6 +53,8 @@ oc get route -n <namespace>
 | `alm-aap-mock` | API du faux AAP (backstage, pas besoin de l'afficher) |
 
 Identifiants Grafana : `admin` / `alm_password` (valeurs par défaut du chart).
+Phoenix : **pas de login** — l'authentification est désactivée par
+`sandbox-deploy/` (voir §7), l'URL mène directement au tableau de bord.
 
 ---
 
@@ -123,11 +125,30 @@ Identifiants Grafana : `admin` / `alm_password` (valeurs par défaut du chart).
 
 ### Étape D — Sous le capot : l'observabilité de l'agent — 2 min
 
-1. Ouvrir **Phoenix**.
-2. Montrer une trace récente : les étapes de l'agent LangGraph (routage,
-   appels MCP, génération LLM) avec latence et coûts/tokens par étape.
+1. Ouvrir **Phoenix** (pas de login — auth désactivée, voir §7).
+2. Aller dans le projet **ansible-log-monitor** (pas `default`, qui reste
+   vide) → onglet **Spans**.
+3. Cliquer sur une trace **LangGraph** récente → montrer l'arbre complet :
+   `cluster_logs_node` → `summarize_log_node` → `classify_log_node` →
+   `router_step_by_step_solution_node` → `get_more_context_node`, chaque
+   nœud avec son appel `ChatOpenAI`, ses tokens, sa latence.
+
+   ![Trace LangGraph dans Phoenix](images/demo-phoenix-trace.png)
+
    **Phrase clé** : *"Chaque décision de l'agent est traçable — utile pour
    le debug, et pour prouver la valeur à un responsable sécurité ou FinOps."*
+
+   > 💡 **Astuce "effet wow" en direct** : pour générer une trace fraîche
+   > pendant la démo (plutôt que de montrer une trace déjà ancienne), lance
+   > ce one-liner depuis un terminal avec `oc` connecté — il injecte un faux
+   > log d'erreur directement dans le pipeline agent et affiche la solution
+   > générée en ~20-30s. Rafraîchis Phoenix juste après pour voir la
+   > nouvelle trace apparaître en direct :
+   >
+   > ```bash
+   > oc exec -n ansible-logs-monitor deploy/alm-backend -- curl -s -X POST \
+   >   "http://localhost:8000/grafana-alert/?log_message=fatal:%20%5Bworker-05%5D:%20UNREACHABLE!%20%3D%3E%20%7B%22msg%22%3A%20%22Failed%20to%20connect%20to%20the%20host%20via%20ssh%3A%20Permission%20denied%20(publickey%2Cpassword).%22%7D&detected_level=error&filename=demo-live-trigger.log&service_name=ansible-playbook&cluster_name=demo-cluster&log_type=task"
+   > ```
 
 ### Étape E — Clôture — 1 min
 
@@ -181,6 +202,18 @@ limitations connues en §7.
   octobre 2025 → remplacées par les rebuilds `pgsty/minio` et `pgsty/mc`.
 - Loki par défaut veut 3 réplicas / `replication_factor: 3` → impossible sur
   1 seul nœud → forcé à 1.
+- **Phoenix** (`arizephoenix/phoenix:latest`, tag flottant) a activé
+  l'**authentification par défaut** dans une version récente (v21) sans
+  qu'aucun `PHOENIX_SECRET` ne soit configuré par le chart → le backend se
+  faisait rejeter en `401 Unauthorized` à chaque envoi de trace OTLP, et
+  l'étape "observabilité" de la démo tombait à plat (Phoenix vide). Corrigé
+  en forçant `PHOENIX_ENABLE_AUTH: "False"` (déploiement mono-utilisateur de
+  démo, pas besoin d'auth multi-tenant). Conséquence pratique : **l'URL
+  Phoenix s'ouvre directement sur le tableau de bord, sans écran de login**
+  — vérifié à la fois sur une requête GraphQL sans aucun header d'auth et
+  dans le navigateur. Sur une nouvelle sandbox, ce sera le comportement dès
+  le premier déploiement (le fix est dans `single-node-overrides.yaml`,
+  appliqué automatiquement).
 - L'indexation RAG initiale (643 chunks) tourne sur CPU (pas de GPU libre
   pour le service d'embedding sur ce sandbox) → compter ~20-30 min la
   première fois seulement. Les déploiements suivants (upgrade) ne refont pas

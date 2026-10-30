@@ -53,6 +53,15 @@ ansible-playbook sandbox-deploy/deploy.yml \
   -e llm_api_token=your-token
 ```
 
+### Accessing the deployed apps
+
+After a successful run, the playbook prints all application Routes. Grafana
+credentials are `admin` / `alm_password`. Phoenix needs no login at all —
+auth is intentionally disabled via the single-node overrides below (the
+upstream chart otherwise pulls `arizephoenix/phoenix:latest`, which enables
+auth by default with no secret configured, silently dropping all trace
+exports from the backend). See `docs/DEMO_GUIDE.md` for a full walkthrough.
+
 ### Tearing down
 
 ```bash

@@ -34,6 +34,28 @@ minio:
 
 # MinIO bundled inside the Loki chart (charts.min.io minio-5.4.0), plus its
 # bucket-provisioning job which uses the equally-dead `quay.io/minio/mc`.
+# Phoenix (observability/tracing UI) pulls `arizephoenix/phoenix:latest` (floating
+# tag). As of Phoenix v21, auth is ENABLED BY DEFAULT with no PHOENIX_SECRET set,
+# which silently rejects all OTLP trace exports from alm-backend with
+# "401 Unauthorized" (confirmed in the alm-phoenix pod logs). The quickstart was
+# built against an older Phoenix version that had auth disabled by default, so
+# the demo's "AI observability" step (Phoenix traces) ends up empty/broken unless
+# we explicitly disable auth here. Since this is a single-user sandbox demo (not
+# a shared multi-tenant deployment), disabling auth entirely is the simplest fix.
+# NOTE: the chart's `env` value is a plain list, so overriding it via -f REPLACES
+# the whole list - we must repeat the two defaults (DB URL + working dir) here.
+phoenix:
+  env:
+    - name: PHOENIX_SQL_DATABASE_URL
+      valueFrom:
+        secretKeyRef:
+          name: pgvector
+          key: uri
+    - name: PHOENIX_WORKING_DIR
+      value: "/tmp/phoenix"
+    - name: PHOENIX_ENABLE_AUTH
+      value: "False"
+
 loki:
   minio:
     image:
