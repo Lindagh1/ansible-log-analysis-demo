@@ -1,0 +1,45 @@
+---
+# =============================================================================
+# Sandbox deployment defaults for the "Ansible Log Monitor" AI quickstart
+# (https://docs.redhat.com/en/learn/ai-quickstarts/rh-ansible-log-analysis)
+#
+# These are safe, non-secret defaults. Override any of them on the command
+# line with -e key=value, e.g.:
+#
+#   ansible-playbook sandbox-deploy/deploy.yml \
+#     -e ocp_api_url=https://api.CLUSTER:6443 \
+#     -e ocp_token=sha256~xxxxx \
+#     -e target_namespace=ansible-logs-monitor  (default namespace name)
+#
+# If you are already logged in via `oc login`, you can simply omit
+# ocp_api_url / ocp_token and the playbook will reuse the current session.
+# =============================================================================
+
+# --- OpenShift cluster connection (leave empty to reuse an existing `oc login`) ---
+ocp_api_url: ""
+ocp_token: ""
+ocp_skip_tls_verify: true
+
+# --- Target namespace/project for this deployment ---
+target_namespace: ansible-logs-monitor
+helm_release_name: alm
+
+# --- Path to the cloned quickstart repo (parent of this sandbox-deploy dir) ---
+repo_dir: "{{ playbook_dir }}/.."
+
+# --- LLM configuration ---
+# If llm_api_endpoint / llm_model are left empty, the playbook auto-detects
+# the first Ready KServe InferenceService (vLLM) on the cluster and uses it.
+# This makes the playbook portable across sandboxes that expose a different
+# model name/namespace via OpenShift AI.
+llm_auto_detect: true
+llm_api_endpoint: ""
+llm_model: ""
+llm_api_token: "unused-no-auth-required"
+llm_temperature: "0.3"
+
+# --- Demo data ---
+# aap-mock ships with bundled sample Ansible logs; this just makes sure the
+# replay is (re)started so fresh alerts keep flowing during the demo.
+start_demo_replay: true
+replay_rate: 80

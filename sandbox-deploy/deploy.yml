@@ -1,0 +1,240 @@
+---
+# =============================================================================
+# Idempotent deployment of the "Ansible Log Monitor" AI quickstart
+# (rh-ai-quickstart/ansible-log-analysis) onto any OpenShift sandbox.
+#
+# Safe to re-run: on a fresh sandbox it installs everything from scratch;
+# on an existing deployment it just reconciles (helm upgrade --install).
+#
+# Usage:
+#   ansible-playbook sandbox-deploy/deploy.yml \
+#     -e ocp_api_url=https://api.CLUSTER:6443 \
+#     -e ocp_token=sha256~xxxxx
+# =============================================================================
+- name: Deploy Ansible Log Monitor quickstart (idempotent)
+  hosts: local
+  gather_facts: false
+  vars_files:
+    - group_vars/all.yml
+
+  tasks:
+    - name: Log in to the OpenShift cluster (only if credentials were provided)
+      ansible.builtin.command:
+        argv:
+          - oc
+          - login
+          - "--token={{ ocp_token }}"
+          - "--server={{ ocp_api_url }}"
+          - "--insecure-skip-tls-verify={{ ocp_skip_tls_verify | string | lower }}"
+      no_log: true
+      changed_when: false
+      when: (ocp_api_url | length > 0) and (ocp_token | length > 0)
+
+    - name: Verify we have an active OpenShift session
+      ansible.builtin.command: oc whoami
+      register: whoami_result
+      changed_when: false
+
+    - name: Show active session
+      ansible.builtin.debug:
+        msg: "Logged in to OpenShift as: {{ whoami_result.stdout }}"
+
+    # -------------------------------------------------------------------
+    # Namespace
+    # -------------------------------------------------------------------
+    - name: Ensure target namespace/project exists (idempotent)
+      ansible.builtin.shell: |
+        set -e
+        if ! oc get namespace "{{ target_namespace }}" >/dev/null 2>&1; then
+          oc new-project "{{ target_namespace }}" >/dev/null
+          echo "created"
+        else
+          echo "present"
+        fi
+        oc label namespace "{{ target_namespace }}" app=ansible-log-monitor --overwrite >/dev/null
+      register: ns_result
+      changed_when: "'created' in ns_result.stdout"
+
+    - name: Switch current project to target namespace
+      ansible.builtin.command: oc project "{{ target_namespace }}"
+      changed_when: false
+
+    # -------------------------------------------------------------------
+    # LLM auto-detection (portable across sandboxes)
+    # -------------------------------------------------------------------
+    - name: Look for a Ready KServe InferenceService to auto-configure the LLM
+      ansible.builtin.shell: |
+        oc get inferenceservice -A -o json | python3 -c "
+        import json, sys
+        data = json.load(sys.stdin)
+        for item in data.get('items', []):
+            conditions = item.get('status', {}).get('conditions', [])
+            ready = any(c.get('type') == 'Ready' and c.get('status') == 'True' for c in conditions)
+            addr = item.get('status', {}).get('address', {}).get('url', '')
+            if ready and addr:
+                print(addr)
+                print(item['metadata']['name'])
+                sys.exit(0)
+        sys.exit(1)
+        "
+      register: llm_detect
+      changed_when: false
+      failed_when: false
+      when: llm_api_endpoint | length == 0
+
+    - name: Resolve effective LLM endpoint/model
+      ansible.builtin.set_fact:
+        resolved_llm_endpoint: >-
+          {{ llm_api_endpoint if llm_api_endpoint | length > 0
+             else (llm_detect.stdout_lines[0] + '/v1') }}
+        resolved_llm_model: >-
+          {{ llm_model if llm_model | length > 0
+             else llm_detect.stdout_lines[1] }}
+        resolved_llm_token: "{{ llm_api_token }}"
+      when: (llm_api_endpoint | length > 0) or (llm_detect.rc == 0)
+
+    - name: Fail fast if no LLM could be resolved
+      ansible.builtin.fail:
+        msg: >-
+          No LLM endpoint configured and no Ready InferenceService was found
+          on the cluster. Pass -e llm_api_endpoint=... -e llm_model=... explicitly.
+      when: resolved_llm_endpoint is not defined
+
+    - name: Show resolved LLM configuration
+      ansible.builtin.debug:
+        msg:
+          - "LLM endpoint: {{ resolved_llm_endpoint }}"
+          - "LLM model:    {{ resolved_llm_model }}"
+
+    # -------------------------------------------------------------------
+    # Helm deployment (idempotent: upgrade --install)
+    # -------------------------------------------------------------------
+    - name: Render temporary LLM values file for Helm
+      ansible.builtin.template:
+        src: templates/llm-values.yaml.j2
+        dest: /tmp/alm-llm-values.yaml
+        mode: "0600"
+      no_log: true
+
+    - name: Deploy/upgrade Ansible Log Monitor via Helm (idempotent)
+      ansible.builtin.command:
+        argv:
+          - helm
+          - upgrade
+          - --install
+          - "{{ helm_release_name }}"
+          - ./ansible-log-monitor
+          - "-n"
+          - "{{ target_namespace }}"
+          - "-f"
+          - ansible-log-monitor/global-values.yaml
+          - "-f"
+          - ansible-log-monitor/values.yaml
+          - "-f"
+          - "{{ playbook_dir }}/files/single-node-overrides.yaml"
+          - "-f"
+          - /tmp/alm-llm-values.yaml
+          - --create-namespace
+      # Intentionally no --wait here: this chart deploys ~15 workloads and
+      # pulls several images, which can take many minutes. Waiting for
+      # readiness is done separately (see the rollout task below / the
+      # operator can also just watch `oc get pods -n <namespace> -w`).
+      args:
+        chdir: "{{ repo_dir }}/deploy/helm"
+      register: helm_deploy
+      changed_when: "'STATUS: deployed' in helm_deploy.stdout"
+
+    - name: Remove temporary LLM values file
+      ansible.builtin.file:
+        path: /tmp/alm-llm-values.yaml
+        state: absent
+
+    - name: Show Helm result
+      ansible.builtin.debug:
+        var: helm_deploy.stdout_lines
+
+    # -------------------------------------------------------------------
+    # Wait for key workloads to actually be ready
+    # -------------------------------------------------------------------
+    - name: Wait for core deployments to roll out (best-effort snapshot)
+      ansible.builtin.command: >
+        oc rollout status deployment/{{ item }} -n {{ target_namespace }} --timeout=90s
+      loop:
+        - alm-ui
+        - alm-backend
+        - alm-aap-mock
+      register: rollout_result
+      changed_when: false
+      failed_when: false
+
+    - name: Show rollout status
+      ansible.builtin.debug:
+        msg: "{{ item.item }}: {{ item.stdout }}"
+      loop: "{{ rollout_result.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    # -------------------------------------------------------------------
+    # Routes (for the demo guide / operator)
+    # -------------------------------------------------------------------
+    - name: Collect application route URLs
+      ansible.builtin.shell: |
+        oc get route -n "{{ target_namespace }}" -o json | python3 -c "
+        import json, sys
+        data = json.load(sys.stdin)
+        for item in data.get('items', []):
+            name = item['metadata']['name']
+            host = item['spec']['host']
+            scheme = 'https' if 'tls' in item['spec'] else 'http'
+            print(f'{name}={scheme}://{host}')
+        "
+      register: routes_out
+      changed_when: false
+
+    - name: Show application routes
+      ansible.builtin.debug:
+        var: routes_out.stdout_lines
+
+    - name: Extract aap-mock route (for triggering the demo log replay)
+      ansible.builtin.set_fact:
+        aap_mock_url: >-
+          {{ (routes_out.stdout_lines
+              | select('match', '^alm-aap-mock=')
+              | map('regex_replace', '^alm-aap-mock=', '')
+              | list
+              | first)
+             | default('', true) }}
+
+    # -------------------------------------------------------------------
+    # Start/refresh the demo log replay (safe to repeat)
+    # -------------------------------------------------------------------
+    - name: Trigger refresh of bundled sample logs in aap-mock
+      ansible.builtin.uri:
+        url: "{{ aap_mock_url }}/api/auto-loaded/refresh"
+        method: POST
+        validate_certs: false
+        status_code: [200, 201, 404]
+      when: start_demo_replay | bool and aap_mock_url | length > 0
+      ignore_errors: true
+
+    - name: Start/continue mock log replay for the live demo
+      ansible.builtin.uri:
+        url: "{{ aap_mock_url }}/api/logs/replay"
+        method: POST
+        body_format: json
+        body:
+          source: auto-loaded
+          id_or_path: all
+          loop: true
+          rate_lines_per_sec: "{{ replay_rate }}"
+        validate_certs: false
+        status_code: [200, 201, 404, 409]
+      when: start_demo_replay | bool and aap_mock_url | length > 0
+      ignore_errors: true
+
+    - name: Deployment summary
+      ansible.builtin.debug:
+        msg:
+          - "✅ Ansible Log Monitor deployed in namespace: {{ target_namespace }}"
+          - "Routes:"
+          - "{{ routes_out.stdout_lines }}"

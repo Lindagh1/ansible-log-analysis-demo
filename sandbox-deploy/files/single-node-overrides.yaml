@@ -1,0 +1,51 @@
+# =============================================================================
+# Sandbox/single-node adaptation overrides for the ansible-log-monitor chart.
+#
+# These are NOT application config — they only exist to make the quickstart
+# deployable on a small, single-node OpenShift sandbox:
+#
+# 1) MinIO's upstream community images were pulled from Docker Hub/Quay on
+#    2025-10-23 (project went source-only). Both MinIO deployments in this
+#    chart (the standalone "minio" dependency, and the one bundled inside
+#    the Loki chart for chunk storage) default to the now-dead
+#    `quay.io/minio/minio` image. We repoint them to the `pgsty/minio`
+#    community rebuild, which is a drop-in replacement (same
+#    docker-entrypoint.sh / minio binary layout).
+#
+# 2) Loki's `singleBinary` mode defaults to 3 replicas with pod
+#    anti-affinity, which can never schedule on a 1-node cluster. Pinned to
+#    1 replica for sandbox/demo purposes.
+#
+# Safe to drop this file (or set the values back to upstream defaults) once
+# deploying to a real multi-node cluster with normal image mirrors.
+# =============================================================================
+
+# Standalone "minio" chart dependency (quay.io/rh-ai-quickstart ai-architecture-charts)
+minio:
+  image:
+    repository: docker.io/pgsty/minio
+    tag: "RELEASE.2026-08-04T00-00-00Z"
+  # Default command uses /bin/bash, which the pgsty/minio (UBI9-micro based)
+  # image does not ship; rewritten to use /bin/sh instead.
+  command:
+    - /bin/sh
+    - -c
+    - minio server /data --console-address :9090
+
+# MinIO bundled inside the Loki chart (charts.min.io minio-5.4.0), plus its
+# bucket-provisioning job which uses the equally-dead `quay.io/minio/mc`.
+loki:
+  minio:
+    image:
+      repository: docker.io/pgsty/minio
+      tag: "RELEASE.2026-08-04T00-00-00Z"
+    mcImage:
+      repository: docker.io/pgsty/mc
+      tag: "RELEASE.2026-08-04T00-00-00Z"
+  singleBinary:
+    replicas: 1
+  loki:
+    commonConfig:
+      # Default is 3, which can never reach quorum with a single replica
+      # (symptom: "too many unhealthy instances in the ring" / 500s on every query).
+      replication_factor: 1

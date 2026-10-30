@@ -1,0 +1,37 @@
+---
+# Tears down the Ansible Log Monitor quickstart from a namespace.
+# Usage:
+#   ansible-playbook sandbox-deploy/teardown.yml -e target_namespace=ansible-logs-monitor
+- name: Remove Ansible Log Monitor quickstart
+  hosts: local
+  gather_facts: false
+  vars_files:
+    - group_vars/all.yml
+
+  tasks:
+    - name: Log in to the OpenShift cluster (only if credentials were provided)
+      ansible.builtin.command:
+        argv:
+          - oc
+          - login
+          - "--token={{ ocp_token }}"
+          - "--server={{ ocp_api_url }}"
+          - "--insecure-skip-tls-verify={{ ocp_skip_tls_verify | string | lower }}"
+      no_log: true
+      changed_when: false
+      when: (ocp_api_url | length > 0) and (ocp_token | length > 0)
+
+    - name: Uninstall the Helm release
+      ansible.builtin.command: helm uninstall "{{ helm_release_name }}" -n "{{ target_namespace }}"
+      register: helm_uninstall
+      changed_when: "'uninstalled' in helm_uninstall.stdout"
+      failed_when: false
+
+    - name: Delete remaining PVCs (removes all persisted data)
+      ansible.builtin.command: oc delete pvc --all -n "{{ target_namespace }}"
+      changed_when: true
+      failed_when: false
+
+    - name: Confirm teardown
+      ansible.builtin.debug:
+        msg: "Ansible Log Monitor removed from namespace {{ target_namespace }} (namespace itself was left intact)."

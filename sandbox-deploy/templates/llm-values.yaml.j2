@@ -1,0 +1,9 @@
+backend:
+  secret:
+    OPENAI_API_TOKEN: "{{ resolved_llm_token }}"
+    OPENAI_API_ENDPOINT: "{{ resolved_llm_endpoint }}"
+    OPENAI_MODEL: "{{ resolved_llm_model }}"
+    OPENAI_TEMPERATURE: "{{ llm_temperature }}"
+    OPENAI_API_TOKEN_WITH_TOOL_CALLING: ""
+    OPENAI_API_ENDPOINT_WITH_TOOL_CALLING: ""
+    OPENAI_MODEL_WITH_TOOL_CALLING: ""
